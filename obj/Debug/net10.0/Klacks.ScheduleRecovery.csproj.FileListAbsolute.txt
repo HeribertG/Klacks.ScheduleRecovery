@@ -1,0 +1,12 @@
+C:\SourceCode\Klacks.ScheduleRecovery\obj\Debug\net10.0\Klacks.ScheduleRecovery.GeneratedMSBuildEditorConfig.editorconfig
+C:\SourceCode\Klacks.ScheduleRecovery\obj\Debug\net10.0\Klacks.ScheduleRecovery.AssemblyInfoInputs.cache
+C:\SourceCode\Klacks.ScheduleRecovery\obj\Debug\net10.0\Klacks.ScheduleRecovery.AssemblyInfo.cs
+C:\SourceCode\Klacks.ScheduleRecovery\obj\Debug\net10.0\Klacks.ScheduleRecovery.csproj.CoreCompileInputs.cache
+C:\SourceCode\Klacks.ScheduleRecovery\obj\Debug\net10.0\Klacks.ScheduleRecovery.sourcelink.json
+C:\SourceCode\Klacks.ScheduleRecovery\bin\Debug\net10.0\Klacks.ScheduleRecovery.deps.json
+C:\SourceCode\Klacks.ScheduleRecovery\bin\Debug\net10.0\Klacks.ScheduleRecovery.dll
+C:\SourceCode\Klacks.ScheduleRecovery\bin\Debug\net10.0\Klacks.ScheduleRecovery.pdb
+C:\SourceCode\Klacks.ScheduleRecovery\obj\Debug\net10.0\Klacks.ScheduleRecovery.dll
+C:\SourceCode\Klacks.ScheduleRecovery\obj\Debug\net10.0\refint\Klacks.ScheduleRecovery.dll
+C:\SourceCode\Klacks.ScheduleRecovery\obj\Debug\net10.0\Klacks.ScheduleRecovery.pdb
+C:\SourceCode\Klacks.ScheduleRecovery\obj\Debug\net10.0\ref\Klacks.ScheduleRecovery.dll
