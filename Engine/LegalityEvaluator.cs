@@ -8,12 +8,13 @@ namespace Klacks.ScheduleRecovery.Engine;
 /// <summary>
 /// Ports the hard-constraint logic of the Wizard-2 DomainAwareReplaceValidator and the find_replacement
 /// exclusions onto the recovery model, without referencing the optimizer, and lifts it from one-cell-per-day
-/// to interval-based so split shifts are handled. It separates two notions the NRRP objective treats
-/// differently: <b>gates</b> are placements that are physically/contractually impossible (time-overlap
-/// collision, unavailable, keyword, blacklist, missing qualification) and exclude a candidate;
-/// <b>violations</b> (min-pause, max-consecutive-days, max-weekly-hours) are undesirable but committable,
-/// so they feed the coverage-dominated Legality tier rather than excluding the candidate. Boundary-day
-/// context is read straight through the working grid.
+/// to interval-based so split shifts are handled. All hard rules are treated as <b>gates</b> that exclude a
+/// candidate (matching the Wizard Stage-0 gate, so a repaired plan never carries a hard violation):
+/// <see cref="IsGatedByContract"/> covers the contract/availability rules (availability, keyword, blacklist,
+/// missing qualification, shift-rotation), <see cref="TargetIsPlaceable"/> the time-overlap collision, and
+/// <see cref="CountViolations"/> the count-based caps (min-pause, max-consecutive-days, max-weekly-hours,
+/// max-daily-hours) — any non-zero count excludes the candidate. Boundary-day context is read straight
+/// through the working grid.
 /// </summary>
 internal static class LegalityEvaluator
 {
@@ -40,6 +41,10 @@ internal static class LegalityEvaluator
             return true;
         }
         if (availability.ForbiddenCategory is { } forbidden && category == forbidden)
+        {
+            return true;
+        }
+        if (!agent.PerformsShiftWork && category != ShiftCategory.Early && category != ShiftCategory.Free)
         {
             return true;
         }
@@ -95,7 +100,30 @@ internal static class LegalityEvaluator
         {
             count++;
         }
+        if (ViolatesMaxDailyHours(grid, agent, date, incoming))
+        {
+            count++;
+        }
         return count;
+    }
+
+    private static bool ViolatesMaxDailyHours(WorkingGrid grid, RecoveryAgent agent, DateOnly date, RecoveryWork incoming)
+    {
+        if (agent.MaxDailyHours <= 0 || !incoming.IsWorking)
+        {
+            return false;
+        }
+
+        var total = 0m;
+        foreach (var work in grid.Get(agent.Id, date))
+        {
+            if (work.IsWorking)
+            {
+                total += work.Hours;
+            }
+        }
+
+        return total > agent.MaxDailyHours;
     }
 
     private static bool ViolatesMinPause(WorkingGrid grid, RecoveryAgent agent, DateOnly date, RecoveryWork incoming)
@@ -126,11 +154,15 @@ internal static class LegalityEvaluator
             }
         }
 
-        if (predecessorEnd is { } prev && (decimal)(incoming.StartAt - prev).TotalHours < agent.MinPauseHours)
+        // Integer/decimal tick arithmetic only — no double in the decision path, so the rest-gap compare
+        // is exact at the cap boundary (gap.Ticks < MinPauseHours * ticks-per-hour is equivalent to the
+        // former TotalHours form but never rounds).
+        var minPauseTicks = agent.MinPauseHours * TimeSpan.TicksPerHour;
+        if (predecessorEnd is { } prev && (incoming.StartAt - prev).Ticks < minPauseTicks)
         {
             return true;
         }
-        if (successorStart is { } next && (decimal)(next - incoming.EndAt).TotalHours < agent.MinPauseHours)
+        if (successorStart is { } next && (next - incoming.EndAt).Ticks < minPauseTicks)
         {
             return true;
         }

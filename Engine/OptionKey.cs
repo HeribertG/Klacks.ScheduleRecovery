@@ -9,11 +9,12 @@ namespace Klacks.ScheduleRecovery.Engine;
 /// tie-break, so the choice is fully deterministic. Every numeric field except the decimal deficit is an
 /// integer; the deficit is exact (decimal, not float) and never the last key. Smaller compares first on
 /// every field except the deficit, which prefers the larger value. Hard constraints (min-pause,
-/// consecutive, weekly) fold into <see cref="Violations"/>; there is no separate soft-conflict signal,
-/// because the engine has no source for one distinct from the committable hard violations.
+/// consecutive, weekly, daily) are gates that exclude a candidate before any option is built, so for a
+/// built option <see cref="Violations"/> is always 0; the key is retained for objective reporting and a
+/// stable ordering shape.
 /// </summary>
 /// <param name="Coverage">1 if the option leaves a critical slot uncovered, else 0 (dominant)</param>
-/// <param name="Violations">Count of newly introduced committable hard violations</param>
+/// <param name="Violations">Hard-violation count of a built option — always 0 under the all-hard gate</param>
 /// <param name="Perturbation">Weighted reassignment-hop cost (w_type aggregated)</param>
 /// <param name="PreferenceRank">0 if the receiving agent prefers the shift, else 1</param>
 /// <param name="TargetHoursDeficit">Receiving agent's period deficit; larger ranks higher (fairness)</param>

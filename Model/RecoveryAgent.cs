@@ -17,6 +17,10 @@ namespace Klacks.ScheduleRecovery.Model;
 /// <param name="PreferredShiftIds">Shift ids the agent prefers (ClientShiftPreference Preferred)</param>
 /// <param name="BlacklistedShiftIds">Shift ids the agent must never be assigned to (ClientShiftPreference Blacklist)</param>
 /// <param name="IsInGroup">True if the agent is a member of the receiving group; false marks a borrowable cross-group candidate</param>
+/// <param name="MaxDailyHours">Maximum paid hours per day from the active contract; 0 = unconstrained</param>
+/// <param name="PerformsShiftWork">True if the agent participates in shift rotation; false = early-shift only</param>
+/// <param name="MaximumHours">Hard upper bound on paid hours for the payment period; 0 = unconstrained</param>
+/// <param name="CurrentPeriodHours">Hours already planned for the payment period before this repair (the MaximumHours baseline)</param>
 public sealed record RecoveryAgent(
     Guid Id,
     string DisplayName,
@@ -26,4 +30,8 @@ public sealed record RecoveryAgent(
     decimal TargetHoursDeficit,
     IReadOnlySet<Guid> PreferredShiftIds,
     IReadOnlySet<Guid> BlacklistedShiftIds,
-    bool IsInGroup = true);
+    bool IsInGroup = true,
+    decimal MaxDailyHours = 0m,
+    bool PerformsShiftWork = true,
+    decimal MaximumHours = 0m,
+    decimal CurrentPeriodHours = 0m);

@@ -44,9 +44,14 @@ public sealed class LocalRepairEngine : IRecoveryEngine
         var deltas = new List<CellDelta>();
         var memberships = new List<MembershipDelta>();
         var introducedViolations = 0;
+        // Running period-hours added per agent by this repair so far. The MaximumHours gate compares each
+        // candidate's baseline (CurrentPeriodHours) plus what earlier covers already added against the cap,
+        // so multiple covers to the same agent across the absence cannot cumulatively breach it. Every
+        // demand date is inside the current payment period, so a cover always counts toward period hours.
+        var addedPeriodHours = new Dictionary<Guid, decimal>();
         foreach (var demand in demands)
         {
-            var option = SelectBestOption(snapshot, grid, absence.AgentId, demand, ruleset);
+            var option = SelectBestOption(snapshot, grid, absence.AgentId, demand, ruleset, addedPeriodHours);
             Commit(grid, option);
 
             if (option.Covers)
@@ -54,6 +59,11 @@ public sealed class LocalRepairEngine : IRecoveryEngine
                 foreach (var move in option.Moves)
                 {
                     deltas.Add(move.ToDelta());
+                    addedPeriodHours[move.ToAgentId] = AddedOf(addedPeriodHours, move.ToAgentId) + move.Placed.Hours;
+                    if (move.Removed is not null)
+                    {
+                        addedPeriodHours[move.FromAgentId] = AddedOf(addedPeriodHours, move.FromAgentId) - move.Removed.Hours;
+                    }
                 }
                 introducedViolations += option.IntroducedViolations;
                 if (option.Membership is { } membership)
@@ -125,14 +135,15 @@ public sealed class LocalRepairEngine : IRecoveryEngine
         WorkingGrid grid,
         Guid absentId,
         DemandSlot demand,
-        Ruleset ruleset)
+        Ruleset ruleset,
+        IReadOnlyDictionary<Guid, decimal> addedPeriodHours)
     {
         RepairOption? best = null;
         var anyCover = false;
 
         foreach (var candidate in snapshot.Agents)
         {
-            var direct = BuildDirectOption(snapshot, grid, absentId, demand, ruleset, candidate);
+            var direct = BuildDirectOption(snapshot, grid, absentId, demand, ruleset, candidate, addedPeriodHours);
             if (direct is not null)
             {
                 anyCover = true;
@@ -144,7 +155,7 @@ public sealed class LocalRepairEngine : IRecoveryEngine
         {
             foreach (var blocked in snapshot.Agents)
             {
-                var swap = BuildSwapOption(snapshot, grid, absentId, demand, ruleset, blocked);
+                var swap = BuildSwapOption(snapshot, grid, absentId, demand, ruleset, blocked, addedPeriodHours);
                 if (swap is not null)
                 {
                     anyCover = true;
@@ -163,12 +174,14 @@ public sealed class LocalRepairEngine : IRecoveryEngine
         Guid absentId,
         DemandSlot demand,
         Ruleset ruleset,
-        RecoveryAgent candidate)
+        RecoveryAgent candidate,
+        IReadOnlyDictionary<Guid, decimal> addedPeriodHours)
     {
         var placed = demand.AsAssignment();
         if (candidate.Id == absentId
             || !LegalityEvaluator.TargetIsPlaceable(grid, candidate.Id, demand.Date, placed)
-            || LegalityEvaluator.IsGatedByContract(snapshot, candidate, demand.Category, demand.ShiftId, demand.Date))
+            || LegalityEvaluator.IsGatedByContract(snapshot, candidate, demand.Category, demand.ShiftId, demand.Date)
+            || ExceedsMaximumHours(candidate, AddedOf(addedPeriodHours, candidate.Id), placed.Hours))
         {
             return null;
         }
@@ -176,6 +189,13 @@ public sealed class LocalRepairEngine : IRecoveryEngine
         var branch = grid.Branch();
         branch.AddWork(candidate.Id, demand.Date, placed);
         var violations = LegalityEvaluator.CountViolations(branch, candidate, demand.Date, placed);
+        if (violations > 0)
+        {
+            // Hard-reject: a candidate that would introduce any hard violation (min-pause, consecutive,
+            // weekly or daily hours) is not a legal cover and is excluded — never committed. This keeps
+            // the recovery output in agreement with the Wizard Stage-0 gate.
+            return null;
+        }
 
         var tier = candidate.IsInGroup ? EscalationTier.InGroupFree : EscalationTier.CrossGroupFree;
         var move = new WorkMove(placed, null, absentId, candidate.Id, demand.Date, tier);
@@ -202,7 +222,8 @@ public sealed class LocalRepairEngine : IRecoveryEngine
         Guid absentId,
         DemandSlot demand,
         Ruleset ruleset,
-        RecoveryAgent blocked)
+        RecoveryAgent blocked,
+        IReadOnlyDictionary<Guid, decimal> addedPeriodHours)
     {
         var demandWork = demand.AsAssignment();
         // v1 swap chains stay in-group: a cross-group swap would need two temporary memberships in one
@@ -219,12 +240,32 @@ public sealed class LocalRepairEngine : IRecoveryEngine
             return null;
         }
 
+        // Once `displaced` is relocated, `blocked` takes over the demand work. Verify on a branch with
+        // `displaced` removed that `blocked` can actually host the demand without a residual collision —
+        // e.g. a cross-midnight neighbour on an adjacent day that the single-day `displaced` scan never
+        // sees. Without this gate the swap would double-book `blocked` (a physically impossible plan that
+        // CountViolations does not catch, mirroring the time-overlap gate the direct path already applies).
+        var blockedProbe = grid.Branch();
+        blockedProbe.RemoveWork(blocked.Id, demand.Date, displaced);
+        if (!LegalityEvaluator.TargetIsPlaceable(blockedProbe, blocked.Id, demand.Date, demandWork))
+        {
+            return null;
+        }
+
+        // blocked gives up `displaced` (already in its period baseline) and takes the demand work: gate the
+        // net period-hours change against its MaximumHours cap.
+        if (ExceedsMaximumHours(blocked, AddedOf(addedPeriodHours, blocked.Id) - displaced.Hours, demandWork.Hours))
+        {
+            return null;
+        }
+
         RepairOption? best = null;
         foreach (var recipient in snapshot.Agents)
         {
             if (recipient.Id == absentId || recipient.Id == blocked.Id || !recipient.IsInGroup
                 || !LegalityEvaluator.TargetIsPlaceable(grid, recipient.Id, demand.Date, displaced)
-                || LegalityEvaluator.IsGatedByContract(snapshot, recipient, displaced.Category, displaced.ShiftId, demand.Date))
+                || LegalityEvaluator.IsGatedByContract(snapshot, recipient, displaced.Category, displaced.ShiftId, demand.Date)
+                || ExceedsMaximumHours(recipient, AddedOf(addedPeriodHours, recipient.Id), displaced.Hours))
             {
                 continue;
             }
@@ -236,6 +277,11 @@ public sealed class LocalRepairEngine : IRecoveryEngine
 
             var violations = LegalityEvaluator.CountViolations(branch, recipient, demand.Date, displaced)
                 + LegalityEvaluator.CountViolations(branch, blocked, demand.Date, demandWork);
+            if (violations > 0)
+            {
+                // Hard-reject: neither half of the swap may introduce a hard violation.
+                continue;
+            }
 
             var relocation = new WorkMove(
                 displaced, displaced, blocked.Id, recipient.Id, demand.Date, EscalationTier.InGroupSwap);
@@ -302,6 +348,17 @@ public sealed class LocalRepairEngine : IRecoveryEngine
 
     private static int Perturbation(IReadOnlyList<WorkMove> moves, Ruleset ruleset)
         => moves.Sum(m => ruleset.WeightOf(m.Tier));
+
+    private static decimal AddedOf(IReadOnlyDictionary<Guid, decimal> added, Guid agentId)
+        => added.TryGetValue(agentId, out var hours) ? hours : 0m;
+
+    /// <summary>
+    /// True when committing <paramref name="extraHours"/> to the agent would push its planned period hours
+    /// (baseline + what this repair already added) past the contract MaximumHours cap. 0 = unconstrained.
+    /// </summary>
+    private static bool ExceedsMaximumHours(RecoveryAgent agent, decimal addedSoFar, decimal extraHours)
+        => agent.MaximumHours > 0
+            && agent.CurrentPeriodHours + addedSoFar + extraHours > agent.MaximumHours;
 
     /// <summary>
     /// Collapses per-slot cross-group memberships into one per (agent, group) spanning the full borrowing
