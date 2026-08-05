@@ -49,6 +49,10 @@ public sealed class LocalRepairEngine : IRecoveryEngine
         // so multiple covers to the same agent across the absence cannot cumulatively breach it. Every
         // demand date is inside the current payment period, so a cover always counts toward period hours.
         var addedPeriodHours = new Dictionary<Guid, decimal>();
+
+        // Every demand yields at most one committed option; the counter groups that option's hops so a
+        // swap chain travels through the caller's compliance gate as one unit.
+        var optionId = 0;
         foreach (var demand in demands)
         {
             var option = SelectBestOption(snapshot, grid, absence.AgentId, demand, ruleset, addedPeriodHours);
@@ -58,7 +62,7 @@ public sealed class LocalRepairEngine : IRecoveryEngine
             {
                 foreach (var move in option.Moves)
                 {
-                    deltas.Add(move.ToDelta());
+                    deltas.Add(move.ToDelta(optionId));
                     addedPeriodHours[move.ToAgentId] = AddedOf(addedPeriodHours, move.ToAgentId) + move.Placed.Hours;
                     if (move.Removed is not null)
                     {
@@ -76,6 +80,8 @@ public sealed class LocalRepairEngine : IRecoveryEngine
                 uncovered.Add(new UncoveredSlot(
                     demand.ShiftId, demand.Date, option.UncoveredReason, demand.IsCritical, WorkIdsOf(demand.Work)));
             }
+
+            optionId++;
         }
 
         var objective = Aggregate(deltas, uncovered, ruleset, absence.AgentId, introducedViolations);

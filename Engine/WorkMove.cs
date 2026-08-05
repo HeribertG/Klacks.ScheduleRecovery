@@ -25,8 +25,13 @@ internal sealed record WorkMove(
     DateOnly Date,
     EscalationTier Tier)
 {
-    public CellDelta ToDelta()
+    /// <summary>
+    /// Projects the move onto a delta. All hops of one repair option must carry the same optionId so the
+    /// caller can accept or reject a swap chain as a unit instead of letting its halves drift apart.
+    /// </summary>
+    /// <param name="optionId">Groups the hops that belong to one atomic repair option.</param>
+    public CellDelta ToDelta(int optionId)
         => new(
             Placed.ShiftId, Date, FromAgentId, ToAgentId, Placed.Category,
-            Placed.StartAt, Placed.EndAt, Placed.Hours, Tier, Placed.WorkIds ?? []);
+            Placed.StartAt, Placed.EndAt, Placed.Hours, Tier, Placed.WorkIds ?? [], optionId);
 }
