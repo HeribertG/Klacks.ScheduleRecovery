@@ -9,7 +9,9 @@ namespace Klacks.ScheduleRecovery.Model;
 public static class RulesetDefaults
 {
     public const int MaxSwapChainDepth = 2;
-    public const int WeightInGroupFree = 1;
+    public const int WeightInGroupOnCall = 1;
+    public const int WeightInGroupFree = 2;
+    public const int WeightCrossGroupOnCall = 3;
     public const int WeightInGroupSwap = 4;
     public const int WeightCrossGroupFree = 16;
     public const int WeightCrossGroupSwap = 64;

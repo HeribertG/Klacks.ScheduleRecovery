@@ -5,7 +5,8 @@ using Klacks.ScheduleRecovery.Model;
 namespace Klacks.ScheduleRecovery.Engine;
 
 /// <summary>
-/// The deterministic in-group local-repair engine (escalation tiers 0, 1 and the uncovered fallback).
+/// The deterministic local-repair engine (direct on-call / free covers, in-group swaps, cross-group direct
+/// covers and the uncovered fallback; an agent on call on the demand day is the preferred direct cover).
 /// It collects every working, non-locked work the absent agent held (split shifts included) as a demand,
 /// taken in a total order (date, start, shift id). For each demand it enumerates every direct cover and
 /// every depth-bounded swap chain over the Guid-ordered candidate pool plus the leave-uncovered option,
@@ -203,7 +204,7 @@ public sealed class LocalRepairEngine : IRecoveryEngine
             return null;
         }
 
-        var tier = candidate.IsInGroup ? EscalationTier.InGroupFree : EscalationTier.CrossGroupFree;
+        var tier = DirectTierOf(candidate, snapshot.GetAvailability(candidate.Id, demand.Date).IsOnCall);
         var move = new WorkMove(placed, null, absentId, candidate.Id, demand.Date, tier);
         WorkMove[] moves = [move];
 
@@ -221,6 +222,18 @@ public sealed class LocalRepairEngine : IRecoveryEngine
             : new MembershipDelta(candidate.Id, snapshot.ReceivingGroupId, demand.Date, demand.Date);
         return new RepairOption(key, true, moves, violations, string.Empty, membership);
     }
+
+    /// <summary>
+    /// Tier of a direct cover: an agent on call that day is the preferred replacement within its group
+    /// scope, ahead of a merely free agent of the same scope.
+    /// </summary>
+    private static EscalationTier DirectTierOf(RecoveryAgent candidate, bool isOnCall) => (candidate.IsInGroup, isOnCall) switch
+    {
+        (true, true) => EscalationTier.InGroupOnCall,
+        (true, false) => EscalationTier.InGroupFree,
+        (false, true) => EscalationTier.CrossGroupOnCall,
+        (false, false) => EscalationTier.CrossGroupFree,
+    };
 
     private static RepairOption? BuildSwapOption(
         RecoverySnapshot snapshot,
@@ -436,19 +449,7 @@ public sealed class LocalRepairEngine : IRecoveryEngine
     private static EscalationTier HighestTier(
         IReadOnlyList<CellDelta> deltas, IReadOnlyList<UncoveredSlot> uncovered)
     {
-        var highest = EscalationTier.InGroupFree;
-        foreach (var delta in deltas)
-        {
-            if (delta.Tier > highest)
-            {
-                highest = delta.Tier;
-            }
-        }
-        if (uncovered.Count > 0 && EscalationTier.Uncovered > highest)
-        {
-            highest = EscalationTier.Uncovered;
-        }
-        return highest;
+        return EscalationTierSeverity.Highest(deltas.Select(d => d.Tier), uncovered.Count > 0);
     }
 
     private static bool IsPreferred(RecoveryAgent agent, Guid? shiftId)
