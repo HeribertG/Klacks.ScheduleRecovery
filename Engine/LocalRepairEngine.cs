@@ -10,7 +10,9 @@ namespace Klacks.ScheduleRecovery.Engine;
 /// It collects every working, non-locked work the absent agent held (split shifts included) as a demand,
 /// taken in a total order (date, start, shift id). For each demand it enumerates every direct cover and
 /// every depth-bounded swap chain over the Guid-ordered candidate pool plus the leave-uncovered option,
-/// then commits the single lexicographically optimal option (<see cref="OptionKey"/>). Collision is judged
+/// then commits the single lexicographically optimal option (<see cref="OptionKey"/>). Among options of equal
+/// coverage, legality and perturbation the one that keeps the rhythm of the touched rows wins
+/// (<see cref="RowHarmony"/>), so a cover extends a fitting block instead of tearing a free block apart. Collision is judged
 /// by time-interval overlap, so a candidate free in a different window of the same day is a valid direct
 /// cover. The search clones the working grid before trying any move, never mutates the snapshot, uses no
 /// clock or random source and never iterates a hash-ordered collection in the decision path — so equal
@@ -45,6 +47,7 @@ public sealed class LocalRepairEngine : IRecoveryEngine
         var deltas = new List<CellDelta>();
         var memberships = new List<MembershipDelta>();
         var introducedViolations = 0;
+        var harmonyDelta = 0;
         // Running period-hours added per agent by this repair so far. The MaximumHours gate compares each
         // candidate's baseline (CurrentPeriodHours) plus what earlier covers already added against the cap,
         // so multiple covers to the same agent across the absence cannot cumulatively breach it. Every
@@ -71,6 +74,7 @@ public sealed class LocalRepairEngine : IRecoveryEngine
                     }
                 }
                 introducedViolations += option.IntroducedViolations;
+                harmonyDelta += option.Key.Harmony;
                 if (option.Membership is { } membership)
                 {
                     memberships.Add(membership);
@@ -87,7 +91,10 @@ public sealed class LocalRepairEngine : IRecoveryEngine
 
         var objective = Aggregate(deltas, uncovered, ruleset, absence.AgentId, introducedViolations);
         var highestTier = HighestTier(deltas, uncovered);
-        return new RecoveryProposal(deltas, MergeMemberships(memberships), uncovered, objective, highestTier);
+        return new RecoveryProposal(deltas, MergeMemberships(memberships), uncovered, objective, highestTier)
+        {
+            HarmonyDelta = harmonyDelta,
+        };
     }
 
     private static List<DemandSlot> CollectDemands(
@@ -212,6 +219,7 @@ public sealed class LocalRepairEngine : IRecoveryEngine
             Coverage: 0,
             Violations: violations,
             Perturbation: Perturbation(moves, ruleset),
+            Harmony: RowHarmony.Delta(grid, branch, candidate.Id, demand.Date),
             PreferenceRank: IsPreferred(candidate, demand.ShiftId) ? 0 : 1,
             TargetHoursDeficit: candidate.TargetHoursDeficit,
             PrimaryGuid: candidate.Id,
@@ -312,6 +320,8 @@ public sealed class LocalRepairEngine : IRecoveryEngine
                 Coverage: 0,
                 Violations: violations,
                 Perturbation: Perturbation(moves, ruleset),
+                Harmony: RowHarmony.Delta(grid, branch, blocked.Id, demand.Date)
+                    + RowHarmony.Delta(grid, branch, recipient.Id, demand.Date),
                 PreferenceRank: IsPreferred(blocked, demand.ShiftId) ? 0 : 1,
                 TargetHoursDeficit: blocked.TargetHoursDeficit,
                 PrimaryGuid: blocked.Id,
@@ -353,6 +363,7 @@ public sealed class LocalRepairEngine : IRecoveryEngine
             Coverage: demand.IsCritical ? 1 : 0,
             Violations: 0,
             Perturbation: 0,
+            Harmony: 0,
             PreferenceRank: int.MaxValue,
             TargetHoursDeficit: decimal.MinValue,
             PrimaryGuid: MaxGuid,
