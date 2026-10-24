@@ -19,6 +19,13 @@ public sealed record RecoveryProposal(
     RecoveryObjective Objective,
     EscalationTier HighestTier)
 {
+    /// <summary>
+    /// Summed rhythm change of the rows the committed covers touched (after minus before, see the engine's row
+    /// harmony): 0 = the repair kept the rhythm, positive = it had to break it somewhere, negative = it left the
+    /// rows more harmonious. Informational; the objective order is unchanged.
+    /// </summary>
+    public int HarmonyDelta { get; init; }
+
     public static readonly RecoveryProposal Empty = new(
         [], [], [], RecoveryObjective.Zero, EscalationTier.InGroupFree);
 }

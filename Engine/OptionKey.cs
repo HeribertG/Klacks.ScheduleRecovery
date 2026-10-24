@@ -4,7 +4,8 @@ namespace Klacks.ScheduleRecovery.Engine;
 
 /// <summary>
 /// The total order the engine uses to pick the single best option for one demand. It encodes the
-/// lexicographic objective (Coverage &gt; Legality &gt; Perturbation) followed by the ported
+/// lexicographic objective (Coverage &gt; Legality &gt; Perturbation), then the rhythm of the touched rows
+/// (<see cref="RowHarmony"/>: among equally small repairs the one that keeps the beat wins), followed by the ported
 /// find_replacement ranking (preferred first, then larger target-hours deficit) and a final stable Guid
 /// tie-break, so the choice is fully deterministic. Every numeric field except the decimal deficit is an
 /// integer; the deficit is exact (decimal, not float) and never the last key. Smaller compares first on
@@ -16,6 +17,7 @@ namespace Klacks.ScheduleRecovery.Engine;
 /// <param name="Coverage">1 if the option leaves a critical slot uncovered, else 0 (dominant)</param>
 /// <param name="Violations">Hard-violation count of a built option — always 0 under the all-hard gate</param>
 /// <param name="Perturbation">Weighted reassignment-hop cost (w_type aggregated)</param>
+/// <param name="Harmony">Rhythm change on every row the option touches (after minus before); lower is better</param>
 /// <param name="PreferenceRank">0 if the receiving agent prefers the shift, else 1</param>
 /// <param name="TargetHoursDeficit">Receiving agent's period deficit; larger ranks higher (fairness)</param>
 /// <param name="PrimaryGuid">Receiving agent id (stable tie-break)</param>
@@ -24,6 +26,7 @@ internal readonly record struct OptionKey(
     int Coverage,
     int Violations,
     int Perturbation,
+    int Harmony,
     int PreferenceRank,
     decimal TargetHoursDeficit,
     Guid PrimaryGuid,
@@ -46,6 +49,12 @@ internal readonly record struct OptionKey(
         {
             return perturbation;
         }
+        var harmony = Harmony.CompareTo(other.Harmony);
+        if (harmony != 0)
+        {
+            return harmony;
+        }
+
         var preference = PreferenceRank.CompareTo(other.PreferenceRank);
         if (preference != 0)
         {
