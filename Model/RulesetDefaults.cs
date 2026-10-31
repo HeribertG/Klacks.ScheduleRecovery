@@ -15,4 +15,6 @@ public static class RulesetDefaults
     public const int WeightInGroupSwap = 4;
     public const int WeightCrossGroupFree = 16;
     public const int WeightCrossGroupSwap = 64;
+    public const int LookaheadBeamWidth = 8;
+    public const int LookaheadBranching = 4;
 }
