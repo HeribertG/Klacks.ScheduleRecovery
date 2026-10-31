@@ -44,34 +44,81 @@ public sealed class LocalRepairEngine : IRecoveryEngine
             return RecoveryProposal.Empty;
         }
 
+        // Greedy repair: one demand after the other, each committing its single best option.
+        var chosen = Search(snapshot, absence.AgentId, demands, grid, ruleset, beamWidth: 1, branching: 1);
+        if (ruleset.LookaheadBeamWidth > 1 && demands.Count > 1)
+        {
+            // Lookahead over the whole absence; it replaces the greedy repair only when strictly better as a whole.
+            var lookahead = Search(
+                snapshot, absence.AgentId, demands, grid, ruleset, ruleset.LookaheadBeamWidth, Math.Max(1, ruleset.LookaheadBranching));
+            if (lookahead.Key.CompareTo(chosen.Key) < 0)
+            {
+                chosen = lookahead;
+            }
+        }
+
+        return BuildProposal(chosen.Options, demands, uncovered, ruleset, absence.AgentId);
+    }
+
+    /// <summary>
+    /// Beam search over the demands in their total order. Every partial repair (path) is extended by its best
+    /// <paramref name="branching"/> options for the next demand; the best <paramref name="beamWidth"/> paths survive,
+    /// ranked by <see cref="PathKey"/>. Width 1 and branching 1 is exactly the greedy repair.
+    /// </summary>
+    private static RepairPath Search(
+        RecoverySnapshot snapshot,
+        Guid absentId,
+        IReadOnlyList<DemandSlot> demands,
+        WorkingGrid grid,
+        Ruleset ruleset,
+        int beamWidth,
+        int branching)
+    {
+        var beam = new List<RepairPath> { RepairPath.Start(grid.Branch()) };
+        foreach (var demand in demands)
+        {
+            var next = new List<RepairPath>(beam.Count * branching);
+            foreach (var path in beam)
+            {
+                var options = RankedOptions(snapshot, path.Grid, absentId, demand, ruleset, path.AddedPeriodHours);
+                for (var rank = 0; rank < options.Count && rank < branching; rank++)
+                {
+                    next.Add(path.Extend(options[rank], rank, demand, beamWidth == 1 && branching == 1));
+                }
+            }
+
+            beam = next
+                .OrderBy(p => p.Key)
+                .Take(beamWidth)
+                .ToList();
+        }
+
+        return beam[0];
+    }
+
+    private static RecoveryProposal BuildProposal(
+        IReadOnlyList<RepairOption> options,
+        IReadOnlyList<DemandSlot> demands,
+        List<UncoveredSlot> uncovered,
+        Ruleset ruleset,
+        Guid absentId)
+    {
         var deltas = new List<CellDelta>();
         var memberships = new List<MembershipDelta>();
         var introducedViolations = 0;
         var harmonyDelta = 0;
-        // Running period-hours added per agent by this repair so far. The MaximumHours gate compares each
-        // candidate's baseline (CurrentPeriodHours) plus what earlier covers already added against the cap,
-        // so multiple covers to the same agent across the absence cannot cumulatively breach it. Every
-        // demand date is inside the current payment period, so a cover always counts toward period hours.
-        var addedPeriodHours = new Dictionary<Guid, decimal>();
 
         // Every demand yields at most one committed option; the counter groups that option's hops so a
         // swap chain travels through the caller's compliance gate as one unit.
-        var optionId = 0;
-        foreach (var demand in demands)
+        for (var optionId = 0; optionId < demands.Count; optionId++)
         {
-            var option = SelectBestOption(snapshot, grid, absence.AgentId, demand, ruleset, addedPeriodHours);
-            Commit(grid, option);
-
+            var option = options[optionId];
+            var demand = demands[optionId];
             if (option.Covers)
             {
                 foreach (var move in option.Moves)
                 {
                     deltas.Add(move.ToDelta(optionId));
-                    addedPeriodHours[move.ToAgentId] = AddedOf(addedPeriodHours, move.ToAgentId) + move.Placed.Hours;
-                    if (move.Removed is not null)
-                    {
-                        addedPeriodHours[move.FromAgentId] = AddedOf(addedPeriodHours, move.FromAgentId) - move.Removed.Hours;
-                    }
                 }
                 introducedViolations += option.IntroducedViolations;
                 harmonyDelta += option.Key.Harmony;
@@ -85,11 +132,9 @@ public sealed class LocalRepairEngine : IRecoveryEngine
                 uncovered.Add(new UncoveredSlot(
                     demand.ShiftId, demand.Date, option.UncoveredReason, demand.IsCritical, WorkIdsOf(demand.Work)));
             }
-
-            optionId++;
         }
 
-        var objective = Aggregate(deltas, uncovered, ruleset, absence.AgentId, introducedViolations);
+        var objective = Aggregate(deltas, uncovered, ruleset, absentId, introducedViolations);
         var highestTier = HighestTier(deltas, uncovered);
         return new RecoveryProposal(deltas, MergeMemberships(memberships), uncovered, objective, highestTier)
         {
@@ -144,7 +189,11 @@ public sealed class LocalRepairEngine : IRecoveryEngine
         return (a.ShiftId ?? Guid.Empty).CompareTo(b.ShiftId ?? Guid.Empty);
     }
 
-    private static RepairOption SelectBestOption(
+    /// <summary>
+    /// Every option for one demand, best first: the direct covers, the best swap per blocked agent and the
+    /// leave-uncovered option. The first entry is the option the greedy repair commits (stable order on ties).
+    /// </summary>
+    private static List<RepairOption> RankedOptions(
         RecoverySnapshot snapshot,
         WorkingGrid grid,
         Guid absentId,
@@ -152,7 +201,7 @@ public sealed class LocalRepairEngine : IRecoveryEngine
         Ruleset ruleset,
         IReadOnlyDictionary<Guid, decimal> addedPeriodHours)
     {
-        RepairOption? best = null;
+        var options = new List<RepairOption>();
         var anyCover = false;
 
         foreach (var candidate in snapshot.Agents)
@@ -161,7 +210,7 @@ public sealed class LocalRepairEngine : IRecoveryEngine
             if (direct is not null)
             {
                 anyCover = true;
-                best = Better(best, direct);
+                options.Add(direct);
             }
         }
 
@@ -173,13 +222,13 @@ public sealed class LocalRepairEngine : IRecoveryEngine
                 if (swap is not null)
                 {
                     anyCover = true;
-                    best = Better(best, swap);
+                    options.Add(swap);
                 }
             }
         }
 
-        best = Better(best, BuildUncoveredOption(demand, anyCover));
-        return best!;
+        options.Add(BuildUncoveredOption(demand, anyCover));
+        return options.OrderBy(o => o.Key).ToList();
     }
 
     private static RepairOption? BuildDirectOption(
@@ -468,4 +517,103 @@ public sealed class LocalRepairEngine : IRecoveryEngine
 
     private static IReadOnlyList<Guid> WorkIdsOf(RecoveryWork work)
         => work.WorkIds ?? [];
+
+    /// <summary>
+    /// Whole-repair ranking, the per-option order summed over the absence: uncovered critical slots, introduced
+    /// violations, perturbation, rhythm delta (the per-option deltas add up, each is measured on the grid its option
+    /// was committed to), shift-wish misses; then the option ranks taken, so among equal repairs the one closer to
+    /// the greedy choices wins.
+    /// </summary>
+    private readonly record struct PathKey(int Uncovered, int Violations, int Perturbation, int Harmony, int PreferenceMisses, string Ranks)
+        : IComparable<PathKey>
+    {
+        public int CompareTo(PathKey other)
+        {
+            var c = Uncovered.CompareTo(other.Uncovered);
+            if (c != 0)
+            {
+                return c;
+            }
+            c = Violations.CompareTo(other.Violations);
+            if (c != 0)
+            {
+                return c;
+            }
+            c = Perturbation.CompareTo(other.Perturbation);
+            if (c != 0)
+            {
+                return c;
+            }
+            c = Harmony.CompareTo(other.Harmony);
+            if (c != 0)
+            {
+                return c;
+            }
+            c = PreferenceMisses.CompareTo(other.PreferenceMisses);
+            if (c != 0)
+            {
+                return c;
+            }
+            return string.CompareOrdinal(Ranks, other.Ranks);
+        }
+    }
+
+    /// <summary>One partial repair: its own grid, the period hours it added so far and the options it committed.</summary>
+    private sealed class RepairPath
+    {
+        private RepairPath(WorkingGrid grid, Dictionary<Guid, decimal> added, List<RepairOption> options, PathKey key)
+        {
+            Grid = grid;
+            AddedPeriodHours = added;
+            Options = options;
+            Key = key;
+        }
+
+        public WorkingGrid Grid { get; }
+
+        public Dictionary<Guid, decimal> AddedPeriodHours { get; }
+
+        public List<RepairOption> Options { get; }
+
+        public PathKey Key { get; }
+
+        public static RepairPath Start(WorkingGrid grid) => new(grid, [], [], new PathKey(0, 0, 0, 0, 0, string.Empty));
+
+        /// <summary>
+        /// Commits <paramref name="option"/> on a copy of this path (or in place when <paramref name="inPlace"/>, the
+        /// greedy case, which never needs this path again).
+        /// </summary>
+        public RepairPath Extend(RepairOption option, int rank, DemandSlot demand, bool inPlace)
+        {
+            var grid = inPlace ? Grid : Grid.Branch();
+            var added = inPlace ? AddedPeriodHours : new Dictionary<Guid, decimal>(AddedPeriodHours);
+            Commit(grid, option);
+            if (option.Covers)
+            {
+                // Running period-hours added per agent by this repair so far. The MaximumHours gate compares each
+                // candidate's baseline (CurrentPeriodHours) plus what earlier covers already added against the cap,
+                // so multiple covers to the same agent across the absence cannot cumulatively breach it.
+                foreach (var move in option.Moves)
+                {
+                    added[move.ToAgentId] = AddedOf(added, move.ToAgentId) + move.Placed.Hours;
+                    if (move.Removed is not null)
+                    {
+                        added[move.FromAgentId] = AddedOf(added, move.FromAgentId) - move.Removed.Hours;
+                    }
+                }
+            }
+
+            var options = inPlace ? Options : [.. Options];
+            options.Add(option);
+            var k = option.Key;
+            var key = new PathKey(
+                Key.Uncovered + (option.Covers ? 0 : (demand.IsCritical ? 1 : 0)),
+                Key.Violations + option.IntroducedViolations,
+                Key.Perturbation + (option.Covers ? k.Perturbation : 0),
+                Key.Harmony + (option.Covers ? k.Harmony : 0),
+                Key.PreferenceMisses + (option.Covers ? k.PreferenceRank : 0),
+                Key.Ranks + (char)('a' + Math.Min(rank, 25)));
+            return new RepairPath(grid, added, options, key);
+        }
+    }
 }

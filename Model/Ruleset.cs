@@ -20,6 +20,14 @@ namespace Klacks.ScheduleRecovery.Model;
 /// <param name="WeightCrossGroupSwap">Perturbation weight of a cross-group swap hop (R4)</param>
 /// <param name="WeightInGroupOnCall">Perturbation weight of a direct in-group hop to an agent on call that day</param>
 /// <param name="WeightCrossGroupOnCall">Perturbation weight of a direct cross-group hop to an agent on call that day</param>
+/// <param name="LookaheadBeamWidth">
+/// Partial repairs carried along over the demands of one absence (default 8; 1 = the plain greedy repair, one demand after the
+/// other). Above 1 the engine plans the whole absence: it keeps the best <c>LookaheadBeamWidth</c> partial repairs,
+/// each extended by its best <see cref="LookaheadBranching"/> options per demand, and takes the lookahead result only
+/// when it is strictly better as a whole than the greedy one (uncovered critical slots, violations, perturbation,
+/// rhythm, shift wish - the same order as one option), so the result is never worse than the greedy repair.
+/// </param>
+/// <param name="LookaheadBranching">Options per demand and partial repair the lookahead tries (only with a beam &gt; 1).</param>
 public sealed record Ruleset(
     int MaxSwapChainDepth = RulesetDefaults.MaxSwapChainDepth,
     int WeightInGroupFree = RulesetDefaults.WeightInGroupFree,
@@ -27,7 +35,9 @@ public sealed record Ruleset(
     int WeightCrossGroupFree = RulesetDefaults.WeightCrossGroupFree,
     int WeightCrossGroupSwap = RulesetDefaults.WeightCrossGroupSwap,
     int WeightInGroupOnCall = RulesetDefaults.WeightInGroupOnCall,
-    int WeightCrossGroupOnCall = RulesetDefaults.WeightCrossGroupOnCall)
+    int WeightCrossGroupOnCall = RulesetDefaults.WeightCrossGroupOnCall,
+    int LookaheadBeamWidth = RulesetDefaults.LookaheadBeamWidth,
+    int LookaheadBranching = RulesetDefaults.LookaheadBranching)
 {
     public static readonly Ruleset Default = new();
 
