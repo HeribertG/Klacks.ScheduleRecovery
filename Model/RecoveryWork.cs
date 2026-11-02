@@ -19,6 +19,7 @@ namespace Klacks.ScheduleRecovery.Model;
 /// <param name="TrailHours">Debriefing, end correction and end travel time directly after <paramref name="EndAt"/>; occupied time, no paid hours of its own</param>
 /// <param name="MovesAsWhole">True when a reassignment of this work moves it with everything on it, so its extras go along</param>
 /// <param name="ExtraPaidHours">Hours of travel and corrections on top of <paramref name="Hours"/>; a briefing or debriefing adds none</param>
+/// <param name="IsSwapLocked">True when no swap may take the work from its person; unlike <paramref name="IsLocked"/> it can still be covered when that person falls out</param>
 public sealed record RecoveryWork(
     ShiftCategory Category,
     Guid? ShiftId,
@@ -30,7 +31,8 @@ public sealed record RecoveryWork(
     decimal LeadHours = 0m,
     decimal TrailHours = 0m,
     decimal ExtraPaidHours = 0m,
-    bool MovesAsWhole = false)
+    bool MovesAsWhole = false,
+    bool IsSwapLocked = false)
 {
     /// <summary>True when the assignment is an actual shift (not a Break).</summary>
     public bool IsWorking => Category != ShiftCategory.Break;

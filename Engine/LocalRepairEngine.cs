@@ -399,7 +399,7 @@ public sealed class LocalRepairEngine : IRecoveryEngine
             {
                 continue;
             }
-            if (!work.IsWorking || work.IsLocked || overlapping is not null)
+            if (!work.IsWorking || work.IsLocked || work.IsSwapLocked || overlapping is not null)
             {
                 return null;
             }
