@@ -17,6 +17,7 @@ namespace Klacks.ScheduleRecovery.Model;
 /// <param name="WorkIds">Underlying Work ids that materialise this assignment, for delta provenance</param>
 /// <param name="LeadHours">Briefing, start correction and start travel time directly before <paramref name="StartAt"/>; occupied time, no paid hours of its own</param>
 /// <param name="TrailHours">Debriefing, end correction and end travel time directly after <paramref name="EndAt"/>; occupied time, no paid hours of its own</param>
+/// <param name="MovesAsWhole">True when a reassignment of this work moves it with everything on it, so its extras go along</param>
 /// <param name="ExtraPaidHours">Hours of travel and corrections on top of <paramref name="Hours"/>; a briefing or debriefing adds none</param>
 public sealed record RecoveryWork(
     ShiftCategory Category,
@@ -28,7 +29,8 @@ public sealed record RecoveryWork(
     IReadOnlyList<Guid>? WorkIds = null,
     decimal LeadHours = 0m,
     decimal TrailHours = 0m,
-    decimal ExtraPaidHours = 0m)
+    decimal ExtraPaidHours = 0m,
+    bool MovesAsWhole = false)
 {
     /// <summary>True when the assignment is an actual shift (not a Break).</summary>
     public bool IsWorking => Category != ShiftCategory.Break;
@@ -47,6 +49,9 @@ public sealed record RecoveryWork(
 
     /// <summary>Hours the work counts towards the hour caps: its interval plus the extra paid hours.</summary>
     public decimal PaidHours => Hours + ExtraPaidHours;
+
+    /// <summary>Hours its owner loses when the work is reassigned.</summary>
+    public decimal HoursGivenUp => MovesAsWhole ? PaidHours : Hours;
 
     /// <summary>True when the lead, the work and the trail of this work overlap those of <paramref name="other"/>.</summary>
     public bool OccupiedOverlaps(RecoveryWork other)

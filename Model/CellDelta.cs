@@ -20,6 +20,7 @@ namespace Klacks.ScheduleRecovery.Model;
 /// <param name="LeadHours">Briefing, start correction and start travel time before the assignment</param>
 /// <param name="TrailHours">Debriefing, end correction and end travel time after the assignment</param>
 /// <param name="ExtraPaidHours">Travel and correction hours on top of <paramref name="Hours"/></param>
+/// <param name="MovesAsWhole">True when the assignment moves with everything on it, so its extras leave the previous agent</param>
 /// <param name="OptionId">Deltas sharing an OptionId form one atomic repair option (a swap chain); they must be accepted or rejected as a whole.</param>
 public sealed record CellDelta(
     Guid? ShiftId,
@@ -35,4 +36,5 @@ public sealed record CellDelta(
     int OptionId = 0,
     decimal LeadHours = 0m,
     decimal TrailHours = 0m,
-    decimal ExtraPaidHours = 0m);
+    decimal ExtraPaidHours = 0m,
+    bool MovesAsWhole = false);

@@ -329,9 +329,9 @@ public sealed class LocalRepairEngine : IRecoveryEngine
         }
 
         // blocked gives up `displaced` (already in its period baseline) and takes the demand work: gate the
-        // net period-hours change against its MaximumHours cap. Only the hours of `displaced` leave; its extra paid
-        // hours stay with blocked until a moved service takes its extras with it, so the cap is never undercounted.
-        if (ExceedsMaximumHours(blocked, AddedOf(addedPeriodHours, blocked.Id) - displaced.Hours, demandWork.PaidHours))
+        // net period-hours change against its MaximumHours cap. A work that moves takes its extras along, one that
+        // stays with a replacement leaves them with blocked, so the cap is never undercounted.
+        if (ExceedsMaximumHours(blocked, AddedOf(addedPeriodHours, blocked.Id) - displaced.HoursGivenUp, demandWork.PaidHours))
         {
             return null;
         }
@@ -599,7 +599,7 @@ public sealed class LocalRepairEngine : IRecoveryEngine
                     added[move.ToAgentId] = AddedOf(added, move.ToAgentId) + move.Placed.PaidHours;
                     if (move.Removed is not null)
                     {
-                        added[move.FromAgentId] = AddedOf(added, move.FromAgentId) - move.Removed.Hours;
+                        added[move.FromAgentId] = AddedOf(added, move.FromAgentId) - move.Removed.HoursGivenUp;
                     }
                 }
             }
