@@ -329,8 +329,9 @@ public sealed class LocalRepairEngine : IRecoveryEngine
         }
 
         // blocked gives up `displaced` (already in its period baseline) and takes the demand work: gate the
-        // net period-hours change against its MaximumHours cap. A work that moves takes its extras along, one that
-        // stays with a replacement leaves them with blocked, so the cap is never undercounted.
+        // net period-hours change against its MaximumHours cap. The snapshot marks works that move as a whole: those
+        // take their extras along, any other stays with a replacement and leaves them with blocked. A move that still
+        // falls back when it is written is reported by the cover as a warning.
         if (ExceedsMaximumHours(blocked, AddedOf(addedPeriodHours, blocked.Id) - displaced.HoursGivenUp, demandWork.PaidHours))
         {
             return null;
