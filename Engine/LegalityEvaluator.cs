@@ -22,14 +22,18 @@ internal static class LegalityEvaluator
 
     /// <summary>
     /// True if the contract/availability rules forbid the agent from taking a shift of the given category
-    /// on the date, independent of the current grid occupancy.
+    /// on the date, independent of the current grid occupancy. When the incoming work is given, an absence
+    /// (or sealed day) on any other day its lead, interval or trail reaches gates the agent as well: a night
+    /// running into an absent morning is not a legal cover.
     /// </summary>
+    /// <param name="incoming">The work the agent would take over, or null when only the anchor day is judged</param>
     public static bool IsGatedByContract(
         RecoverySnapshot snapshot,
         RecoveryAgent agent,
         ShiftCategory category,
         Guid? shiftId,
-        DateOnly date)
+        DateOnly date,
+        RecoveryWork? incoming = null)
     {
         var availability = snapshot.GetAvailability(agent.Id, date);
         if (!availability.IsAvailable)
@@ -52,12 +56,32 @@ internal static class LegalityEvaluator
         {
             return true;
         }
-        return snapshot.IsIneligible(agent.Id, shiftId, date);
+        return snapshot.IsIneligible(agent.Id, shiftId, date)
+            || (incoming is not null && ReachesBlockedDay(snapshot, agent.Id, incoming, date));
+    }
+
+    private static bool ReachesBlockedDay(RecoverySnapshot snapshot, Guid agentId, RecoveryWork incoming, DateOnly anchor)
+    {
+        if (!incoming.HasInterval)
+        {
+            return false;
+        }
+
+        var first = DateOnly.FromDateTime(incoming.OccupiedStart);
+        var last = DateOnly.FromDateTime(incoming.OccupiedEnd.AddTicks(-1));
+        for (var day = first; day <= last; day = day.AddDays(1))
+        {
+            if (day != anchor && snapshot.GetAvailability(agentId, day).HasBreakBlocker)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     /// <summary>
     /// True if the agent can host a work of the given interval on the date without a collision: no existing
-    /// work (locked or not) on the adjacent days overlaps the interval. A free window on a day the agent
+    /// work (locked or not) on the adjacent days overlaps the interval, counting the lead and trail of both. A free window on a day the agent
     /// already partly works is therefore placeable, which a one-cell-per-day model would have rejected.
     /// </summary>
     public static bool TargetIsPlaceable(WorkingGrid grid, Guid agentId, DateOnly date, RecoveryWork incoming)
@@ -71,7 +95,7 @@ internal static class LegalityEvaluator
         {
             foreach (var work in grid.Get(agentId, probe))
             {
-                if (work.OverlapsInterval(incoming.StartAt, incoming.EndAt))
+                if (work.OccupiedOverlaps(incoming))
                 {
                     return false;
                 }
@@ -119,7 +143,7 @@ internal static class LegalityEvaluator
         {
             if (work.IsWorking)
             {
-                total += work.Hours;
+                total += work.PaidHours;
             }
         }
 
@@ -143,13 +167,15 @@ internal static class LegalityEvaluator
                 {
                     continue;
                 }
-                if (work.EndAt <= incoming.StartAt && (predecessorEnd is null || work.EndAt > predecessorEnd))
+                if (work.OccupiedEnd <= incoming.OccupiedStart
+                    && (predecessorEnd is null || work.OccupiedEnd > predecessorEnd))
                 {
-                    predecessorEnd = work.EndAt;
+                    predecessorEnd = work.OccupiedEnd;
                 }
-                if (work.StartAt >= incoming.EndAt && (successorStart is null || work.StartAt < successorStart))
+                if (work.OccupiedStart >= incoming.OccupiedEnd
+                    && (successorStart is null || work.OccupiedStart < successorStart))
                 {
-                    successorStart = work.StartAt;
+                    successorStart = work.OccupiedStart;
                 }
             }
         }
@@ -158,11 +184,11 @@ internal static class LegalityEvaluator
         // is exact at the cap boundary (gap.Ticks < MinPauseHours * ticks-per-hour is equivalent to the
         // former TotalHours form but never rounds).
         var minPauseTicks = agent.MinPauseHours * TimeSpan.TicksPerHour;
-        if (predecessorEnd is { } prev && (incoming.StartAt - prev).Ticks < minPauseTicks)
+        if (predecessorEnd is { } prev && (incoming.OccupiedStart - prev).Ticks < minPauseTicks)
         {
             return true;
         }
-        if (successorStart is { } next && (next - incoming.EndAt).Ticks < minPauseTicks)
+        if (successorStart is { } next && (next - incoming.OccupiedEnd).Ticks < minPauseTicks)
         {
             return true;
         }
@@ -212,7 +238,7 @@ internal static class LegalityEvaluator
     private static bool ViolatesMaxWeeklyHours(
         WorkingGrid grid, RecoveryAgent agent, DateOnly date, RecoveryWork incoming)
     {
-        if (agent.MaxWeeklyHours <= 0 || incoming.Hours <= 0)
+        if (agent.MaxWeeklyHours <= 0 || incoming.PaidHours <= 0)
         {
             return false;
         }
@@ -230,7 +256,7 @@ internal static class LegalityEvaluator
             {
                 if (work.IsWorking)
                 {
-                    total += work.Hours;
+                    total += work.PaidHours;
                 }
             }
         }

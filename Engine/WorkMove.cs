@@ -33,5 +33,6 @@ internal sealed record WorkMove(
     public CellDelta ToDelta(int optionId)
         => new(
             Placed.ShiftId, Date, FromAgentId, ToAgentId, Placed.Category,
-            Placed.StartAt, Placed.EndAt, Placed.Hours, Tier, Placed.WorkIds ?? [], optionId);
+            Placed.StartAt, Placed.EndAt, Placed.Hours, Tier, Placed.WorkIds ?? [], optionId,
+            Placed.LeadHours, Placed.TrailHours, Placed.ExtraPaidHours);
 }

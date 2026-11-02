@@ -15,6 +15,9 @@ namespace Klacks.ScheduleRecovery.Model;
 /// <param name="EndAt">End instant of the work</param>
 /// <param name="Hours">Paid hours; Break.WorkTime for a Break, contributing to the period target only</param>
 /// <param name="WorkIds">Underlying Work ids that materialise this assignment, for delta provenance</param>
+/// <param name="LeadHours">Briefing, start correction and start travel time directly before <paramref name="StartAt"/>; occupied time, no paid hours of its own</param>
+/// <param name="TrailHours">Debriefing, end correction and end travel time directly after <paramref name="EndAt"/>; occupied time, no paid hours of its own</param>
+/// <param name="ExtraPaidHours">Hours of travel and corrections on top of <paramref name="Hours"/>; a briefing or debriefing adds none</param>
 public sealed record RecoveryWork(
     ShiftCategory Category,
     Guid? ShiftId,
@@ -22,7 +25,10 @@ public sealed record RecoveryWork(
     DateTime StartAt = default,
     DateTime EndAt = default,
     decimal Hours = 0m,
-    IReadOnlyList<Guid>? WorkIds = null)
+    IReadOnlyList<Guid>? WorkIds = null,
+    decimal LeadHours = 0m,
+    decimal TrailHours = 0m,
+    decimal ExtraPaidHours = 0m)
 {
     /// <summary>True when the assignment is an actual shift (not a Break).</summary>
     public bool IsWorking => Category != ShiftCategory.Break;
@@ -33,7 +39,22 @@ public sealed record RecoveryWork(
     /// <summary>True when the work carries a real, non-default time interval.</summary>
     public bool HasInterval => StartAt != default && EndAt != default;
 
+    /// <summary>First instant the work occupies: <see cref="StartAt"/> minus the lead.</summary>
+    public DateTime OccupiedStart => HasInterval ? StartAt - HoursSpan(LeadHours) : StartAt;
+
+    /// <summary>Last instant the work occupies: <see cref="EndAt"/> plus the trail.</summary>
+    public DateTime OccupiedEnd => HasInterval ? EndAt + HoursSpan(TrailHours) : EndAt;
+
+    /// <summary>Hours the work counts towards the hour caps: its interval plus the extra paid hours.</summary>
+    public decimal PaidHours => Hours + ExtraPaidHours;
+
+    /// <summary>True when the lead, the work and the trail of this work overlap those of <paramref name="other"/>.</summary>
+    public bool OccupiedOverlaps(RecoveryWork other)
+        => HasInterval && other.HasInterval && OccupiedStart < other.OccupiedEnd && other.OccupiedStart < OccupiedEnd;
+
     /// <summary>True when this work's interval overlaps the given interval (half-open comparison).</summary>
     public bool OverlapsInterval(DateTime start, DateTime end)
         => HasInterval && start != default && end != default && StartAt < end && start < EndAt;
+
+    private static TimeSpan HoursSpan(decimal hours) => TimeSpan.FromTicks((long)(hours * TimeSpan.TicksPerHour));
 }

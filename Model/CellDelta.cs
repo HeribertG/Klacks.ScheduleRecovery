@@ -17,6 +17,9 @@ namespace Klacks.ScheduleRecovery.Model;
 /// <param name="Hours">Paid hours of the assignment</param>
 /// <param name="Tier">The escalation tier this hop belongs to (drives the perturbation weight)</param>
 /// <param name="SourceWorkIds">Underlying Work ids of the moved assignment, for persistence provenance</param>
+/// <param name="LeadHours">Briefing, start correction and start travel time before the assignment</param>
+/// <param name="TrailHours">Debriefing, end correction and end travel time after the assignment</param>
+/// <param name="ExtraPaidHours">Travel and correction hours on top of <paramref name="Hours"/></param>
 /// <param name="OptionId">Deltas sharing an OptionId form one atomic repair option (a swap chain); they must be accepted or rejected as a whole.</param>
 public sealed record CellDelta(
     Guid? ShiftId,
@@ -29,4 +32,7 @@ public sealed record CellDelta(
     decimal Hours,
     EscalationTier Tier,
     IReadOnlyList<Guid> SourceWorkIds,
-    int OptionId = 0);
+    int OptionId = 0,
+    decimal LeadHours = 0m,
+    decimal TrailHours = 0m,
+    decimal ExtraPaidHours = 0m);
