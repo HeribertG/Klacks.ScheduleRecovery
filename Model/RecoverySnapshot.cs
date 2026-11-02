@@ -14,12 +14,14 @@ namespace Klacks.ScheduleRecovery.Model;
 public sealed class RecoverySnapshot
 {
     private static readonly IReadOnlyList<RecoveryWork> NoWorks = [];
+    private static readonly IReadOnlyList<AbsenceWindow> NoAbsences = [];
 
     private readonly IReadOnlyDictionary<CellKey, IReadOnlyList<RecoveryWork>> _works;
     private readonly IReadOnlyDictionary<CellKey, DayAvailability> _availability;
     private readonly IReadOnlySet<IneligibleKey> _ineligible;
     private readonly IReadOnlySet<CellKey> _nonCriticalSlots;
     private readonly IReadOnlyDictionary<Guid, RecoveryAgent> _agentsById;
+    private readonly IReadOnlyDictionary<CellKey, IReadOnlyList<AbsenceWindow>> _blockingAbsences;
 
     /// <param name="days">The window the repair operates on, sorted ascending</param>
     /// <param name="agents">The candidate pool; frozen into Guid order for a stable total enumeration</param>
@@ -28,6 +30,7 @@ public sealed class RecoverySnapshot
     /// <param name="ineligibleAssignments">(agent, shift, date) combinations that are hard-gated</param>
     /// <param name="nonCriticalSlots">(agent, date) keys whose coverage is optional; missing means critical</param>
     /// <param name="receivingGroupId">The group being repaired; a cross-group cover joins a borrowed agent to it</param>
+    /// <param name="blockingAbsences">Real time spans of the blocking absences per (agent, date); a missing key means none</param>
     public RecoverySnapshot(
         IReadOnlyList<DateOnly> days,
         IReadOnlyList<RecoveryAgent> agents,
@@ -35,7 +38,8 @@ public sealed class RecoverySnapshot
         IReadOnlyDictionary<CellKey, DayAvailability>? availability = null,
         IReadOnlySet<IneligibleKey>? ineligibleAssignments = null,
         IReadOnlySet<CellKey>? nonCriticalSlots = null,
-        Guid receivingGroupId = default)
+        Guid receivingGroupId = default,
+        IReadOnlyDictionary<CellKey, IReadOnlyList<AbsenceWindow>>? blockingAbsences = null)
     {
         Days = days.OrderBy(d => d.DayNumber).ToList();
         Agents = agents.OrderBy(a => a.Id).ToList();
@@ -45,6 +49,7 @@ public sealed class RecoverySnapshot
         _ineligible = ineligibleAssignments ?? new HashSet<IneligibleKey>();
         _nonCriticalSlots = nonCriticalSlots ?? new HashSet<CellKey>();
         ReceivingGroupId = receivingGroupId;
+        _blockingAbsences = blockingAbsences ?? new Dictionary<CellKey, IReadOnlyList<AbsenceWindow>>();
     }
 
     /// <summary>The group being repaired; a cross-group cover materialises a temporary membership in it.</summary>
@@ -65,6 +70,10 @@ public sealed class RecoverySnapshot
         => _availability.TryGetValue(new CellKey(agentId, date), out var availability)
             ? availability
             : DayAvailability.AlwaysAvailable;
+
+    /// <summary>The blocking absences that start on the date; an empty list when there is none.</summary>
+    public IReadOnlyList<AbsenceWindow> GetBlockingAbsences(Guid agentId, DateOnly date)
+        => _blockingAbsences.TryGetValue(new CellKey(agentId, date), out var windows) ? windows : NoAbsences;
 
     /// <summary>True if the agent is not qualified for the shift on the date (hard gate).</summary>
     public bool IsIneligible(Guid agentId, Guid? shiftId, DateOnly date)

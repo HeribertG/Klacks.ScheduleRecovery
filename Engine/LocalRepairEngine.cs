@@ -243,7 +243,7 @@ public sealed class LocalRepairEngine : IRecoveryEngine
         var placed = demand.AsAssignment();
         if (candidate.Id == absentId
             || !LegalityEvaluator.TargetIsPlaceable(grid, candidate.Id, demand.Date, placed)
-            || LegalityEvaluator.IsGatedByContract(snapshot, candidate, demand.Category, demand.ShiftId, demand.Date, placed)
+            || LegalityEvaluator.IsGatedByContract(snapshot, candidate, placed, demand.Date)
             || ExceedsMaximumHours(candidate, AddedOf(addedPeriodHours, candidate.Id), placed.PaidHours))
         {
             return null;
@@ -305,7 +305,7 @@ public sealed class LocalRepairEngine : IRecoveryEngine
         // v1 swap chains stay in-group: a cross-group swap would need two temporary memberships in one
         // chain (tier 3, deferred). Cross-group is covered by the direct path (tier 2) only.
         if (blocked.Id == absentId || !blocked.IsInGroup
-            || LegalityEvaluator.IsGatedByContract(snapshot, blocked, demand.Category, demand.ShiftId, demand.Date, demandWork))
+            || LegalityEvaluator.IsGatedByContract(snapshot, blocked, demandWork, demand.Date))
         {
             return null;
         }
@@ -329,8 +329,9 @@ public sealed class LocalRepairEngine : IRecoveryEngine
         }
 
         // blocked gives up `displaced` (already in its period baseline) and takes the demand work: gate the
-        // net period-hours change against its MaximumHours cap.
-        if (ExceedsMaximumHours(blocked, AddedOf(addedPeriodHours, blocked.Id) - displaced.PaidHours, demandWork.PaidHours))
+        // net period-hours change against its MaximumHours cap. Only the hours of `displaced` leave; its extra paid
+        // hours stay with blocked until a moved service takes its extras with it, so the cap is never undercounted.
+        if (ExceedsMaximumHours(blocked, AddedOf(addedPeriodHours, blocked.Id) - displaced.Hours, demandWork.PaidHours))
         {
             return null;
         }
@@ -340,7 +341,7 @@ public sealed class LocalRepairEngine : IRecoveryEngine
         {
             if (recipient.Id == absentId || recipient.Id == blocked.Id || !recipient.IsInGroup
                 || !LegalityEvaluator.TargetIsPlaceable(grid, recipient.Id, demand.Date, displaced)
-                || LegalityEvaluator.IsGatedByContract(snapshot, recipient, displaced.Category, displaced.ShiftId, demand.Date, displaced)
+                || LegalityEvaluator.IsGatedByContract(snapshot, recipient, displaced, demand.Date)
                 || ExceedsMaximumHours(recipient, AddedOf(addedPeriodHours, recipient.Id), displaced.PaidHours))
             {
                 continue;
@@ -598,7 +599,7 @@ public sealed class LocalRepairEngine : IRecoveryEngine
                     added[move.ToAgentId] = AddedOf(added, move.ToAgentId) + move.Placed.PaidHours;
                     if (move.Removed is not null)
                     {
-                        added[move.FromAgentId] = AddedOf(added, move.FromAgentId) - move.Removed.PaidHours;
+                        added[move.FromAgentId] = AddedOf(added, move.FromAgentId) - move.Removed.Hours;
                     }
                 }
             }

@@ -22,21 +22,28 @@ internal static class LegalityEvaluator
 
     /// <summary>
     /// True if the contract/availability rules forbid the agent from taking a shift of the given category
-    /// on the date, independent of the current grid occupancy. When the incoming work is given, an absence
-    /// (or sealed day) on any other day its lead, interval or trail reaches gates the agent as well: a night
-    /// running into an absent morning is not a legal cover.
+    /// on the date, independent of the current grid occupancy. Day off, FREE keyword, category rules and a sealed anchor
+    /// day close the anchor day as a whole. An absence gates the agent only when its real span overlaps the occupied
+    /// time of the work (lead, interval and trail), on the anchor day and on any other day the work reaches through
+    /// midnight alike: a night running into an absent morning is not a legal cover, an appointment on the evening
+    /// before it is. A sealed or on-call neighbouring day is no obstacle.
     /// </summary>
-    /// <param name="incoming">The work the agent would take over, or null when only the anchor day is judged</param>
+    /// <param name="incoming">The work the agent would take over; its category and shift are judged</param>
+    /// <param name="date">The anchor day of the work</param>
     public static bool IsGatedByContract(
         RecoverySnapshot snapshot,
         RecoveryAgent agent,
-        ShiftCategory category,
-        Guid? shiftId,
-        DateOnly date,
-        RecoveryWork? incoming = null)
+        RecoveryWork incoming,
+        DateOnly date)
     {
+        var category = incoming.Category;
+        var shiftId = incoming.ShiftId;
         var availability = snapshot.GetAvailability(agent.Id, date);
-        if (!availability.IsAvailable)
+        if (!availability.WorksOnDay || availability.HasFreeCommand || availability.IsSealed)
+        {
+            return true;
+        }
+        if (availability.HasBreakBlocker && snapshot.GetBlockingAbsences(agent.Id, date).Count == 0)
         {
             return true;
         }
@@ -57,23 +64,27 @@ internal static class LegalityEvaluator
             return true;
         }
         return snapshot.IsIneligible(agent.Id, shiftId, date)
-            || (incoming is not null && ReachesBlockedDay(snapshot, agent.Id, incoming, date));
+            || OverlapsAbsence(snapshot, agent.Id, incoming);
     }
 
-    private static bool ReachesBlockedDay(RecoverySnapshot snapshot, Guid agentId, RecoveryWork incoming, DateOnly anchor)
+    private static bool OverlapsAbsence(RecoverySnapshot snapshot, Guid agentId, RecoveryWork incoming)
     {
         if (!incoming.HasInterval)
         {
             return false;
         }
 
-        var first = DateOnly.FromDateTime(incoming.OccupiedStart);
-        var last = DateOnly.FromDateTime(incoming.OccupiedEnd.AddTicks(-1));
-        for (var day = first; day <= last; day = day.AddDays(1))
+        var start = incoming.OccupiedStart;
+        var end = incoming.OccupiedEnd;
+        var last = DateOnly.FromDateTime(end.AddTicks(-1));
+        for (var day = DateOnly.FromDateTime(start).AddDays(-1); day <= last; day = day.AddDays(1))
         {
-            if (day != anchor && snapshot.GetAvailability(agentId, day).HasBreakBlocker)
+            foreach (var absence in snapshot.GetBlockingAbsences(agentId, day))
             {
-                return true;
+                if (absence.Start < end && start < absence.End)
+                {
+                    return true;
+                }
             }
         }
         return false;

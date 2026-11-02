@@ -10,17 +10,19 @@ namespace Klacks.ScheduleRecovery.Model;
 /// </summary>
 /// <param name="WorksOnDay">True if the agent's contract permits work on this day-of-week, or the agent is on call that day</param>
 /// <param name="HasFreeCommand">True if a schedule command with the FREE keyword blocks this date</param>
-/// <param name="HasBreakBlocker">True if a non-on-call break or absence already overlaps this date</param>
+/// <param name="HasBreakBlocker">True if a non-on-call break or absence or a sealed day already overlaps this date</param>
 /// <param name="RequiredCategory">When set, an assignment on this date must equal this category (OnlyEarly/OnlyLate/OnlyNight)</param>
 /// <param name="ForbiddenCategory">When set, an assignment on this date must not equal this category (NoEarly/NoLate/NoNight)</param>
 /// <param name="IsOnCall">True if the agent holds an on-call absence on this date and no blocking absence</param>
+/// <param name="IsSealed">True if the date is sealed for the agent; a sealed day closes the whole day, an absence only its real span</param>
 public sealed record DayAvailability(
     bool WorksOnDay,
     bool HasFreeCommand,
     bool HasBreakBlocker,
     ShiftCategory? RequiredCategory = null,
     ShiftCategory? ForbiddenCategory = null,
-    bool IsOnCall = false)
+    bool IsOnCall = false,
+    bool IsSealed = false)
 {
     public static readonly DayAvailability AlwaysAvailable = new(true, false, false);
 
