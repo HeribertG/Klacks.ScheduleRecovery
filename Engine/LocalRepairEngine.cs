@@ -5,11 +5,11 @@ using Klacks.ScheduleRecovery.Model;
 namespace Klacks.ScheduleRecovery.Engine;
 
 /// <summary>
-/// The deterministic local-repair engine (direct on-call / free covers, in-group swaps, cross-group direct
+/// The deterministic local-repair engine (direct on-call / free covers, swap chains, cross-group direct
 /// covers and the uncovered fallback; an agent on call on the demand day is the preferred direct cover).
 /// It collects every working, non-locked work the absent agent held (split shifts included) as a demand,
 /// taken in a total order (date, start, shift id). For each demand it enumerates every direct cover and
-/// every depth-bounded swap chain over the Guid-ordered candidate pool plus the leave-uncovered option,
+/// every depth-bounded swap chain (<see cref="ChainSearch"/>) over the Guid-ordered candidate pool plus the leave-uncovered option,
 /// then commits the single lexicographically optimal option (<see cref="OptionKey"/>). Among options of equal
 /// coverage, legality and perturbation the one that keeps the rhythm of the touched rows wins
 /// (<see cref="RowHarmony"/>), so a cover extends a fitting block instead of tearing a free block apart. Collision is judged
@@ -44,13 +44,16 @@ public sealed class LocalRepairEngine : IRecoveryEngine
             return RecoveryProposal.Empty;
         }
 
+        // A work is only taken from its holder from this day on, so a relief never rewrites days that already passed.
+        var firstReliefDay = snapshot.FirstMovableDay ?? absence.Dates.Min();
+
         // Greedy repair: one demand after the other, each committing its single best option.
-        var chosen = Search(snapshot, absence.AgentId, demands, grid, ruleset, beamWidth: 1, branching: 1);
+        var chosen = Search(snapshot, absence.AgentId, demands, grid, ruleset, firstReliefDay, beamWidth: 1, branching: 1);
         if (ruleset.LookaheadBeamWidth > 1 && demands.Count > 1)
         {
             // Lookahead over the whole absence; it replaces the greedy repair only when strictly better as a whole.
             var lookahead = Search(
-                snapshot, absence.AgentId, demands, grid, ruleset, ruleset.LookaheadBeamWidth, Math.Max(1, ruleset.LookaheadBranching));
+                snapshot, absence.AgentId, demands, grid, ruleset, firstReliefDay, ruleset.LookaheadBeamWidth, Math.Max(1, ruleset.LookaheadBranching));
             if (lookahead.Key.CompareTo(chosen.Key) < 0)
             {
                 chosen = lookahead;
@@ -71,6 +74,7 @@ public sealed class LocalRepairEngine : IRecoveryEngine
         IReadOnlyList<DemandSlot> demands,
         WorkingGrid grid,
         Ruleset ruleset,
+        DateOnly firstReliefDay,
         int beamWidth,
         int branching)
     {
@@ -80,7 +84,7 @@ public sealed class LocalRepairEngine : IRecoveryEngine
             var next = new List<RepairPath>(beam.Count * branching);
             foreach (var path in beam)
             {
-                var options = RankedOptions(snapshot, path.Grid, absentId, demand, ruleset, path.AddedPeriodHours);
+                var options = RankedOptions(snapshot, path.Grid, absentId, demand, ruleset, firstReliefDay, path.AddedPeriodHours);
                 for (var rank = 0; rank < options.Count && rank < branching; rank++)
                 {
                     next.Add(path.Extend(options[rank], rank, demand, beamWidth == 1 && branching == 1));
@@ -190,7 +194,7 @@ public sealed class LocalRepairEngine : IRecoveryEngine
     }
 
     /// <summary>
-    /// Every option for one demand, best first: the direct covers, the best swap per blocked agent and the
+    /// Every option for one demand, best first: the direct covers, the best chain per covering agent and the
     /// leave-uncovered option. The first entry is the option the greedy repair commits (stable order on ties).
     /// </summary>
     private static List<RepairOption> RankedOptions(
@@ -199,6 +203,7 @@ public sealed class LocalRepairEngine : IRecoveryEngine
         Guid absentId,
         DemandSlot demand,
         Ruleset ruleset,
+        DateOnly firstReliefDay,
         IReadOnlyDictionary<Guid, decimal> addedPeriodHours)
     {
         var options = new List<RepairOption>();
@@ -214,15 +219,23 @@ public sealed class LocalRepairEngine : IRecoveryEngine
             }
         }
 
-        if (ruleset.MaxSwapChainDepth >= 2)
+        if (ruleset.MaxSwapChainDepth >= ChainSearch.ShortChainMoves)
         {
-            foreach (var blocked in snapshot.Agents)
+            // Short chains are always listed next to the direct covers. A longer chain is only searched while the
+            // demand is still open, so it never replaces a repair that needs fewer moves.
+            var chains = new ChainSearch(snapshot, grid, absentId, demand, ruleset, firstReliefDay, addedPeriodHours);
+            for (var moves = ChainSearch.ShortChainMoves; moves <= ruleset.MaxSwapChainDepth; moves++)
             {
-                var swap = BuildSwapOption(snapshot, grid, absentId, demand, ruleset, blocked, addedPeriodHours);
-                if (swap is not null)
+                if (moves > ChainSearch.ShortChainMoves && anyCover)
+                {
+                    break;
+                }
+
+                var found = chains.Options(moves);
+                if (found.Count > 0)
                 {
                     anyCover = true;
-                    options.Add(swap);
+                    options.AddRange(found);
                 }
             }
         }
@@ -292,122 +305,6 @@ public sealed class LocalRepairEngine : IRecoveryEngine
         (false, false) => EscalationTier.CrossGroupFree,
     };
 
-    private static RepairOption? BuildSwapOption(
-        RecoverySnapshot snapshot,
-        WorkingGrid grid,
-        Guid absentId,
-        DemandSlot demand,
-        Ruleset ruleset,
-        RecoveryAgent blocked,
-        IReadOnlyDictionary<Guid, decimal> addedPeriodHours)
-    {
-        var demandWork = demand.AsAssignment();
-        // v1 swap chains stay in-group: a cross-group swap would need two temporary memberships in one
-        // chain (tier 3, deferred). Cross-group is covered by the direct path (tier 2) only.
-        if (blocked.Id == absentId || !blocked.IsInGroup
-            || LegalityEvaluator.IsGatedByContract(snapshot, blocked, demandWork, demand.Date))
-        {
-            return null;
-        }
-
-        var displaced = SingleOverlappingMovableWork(grid, blocked.Id, demand);
-        if (displaced is null)
-        {
-            return null;
-        }
-
-        // Once `displaced` is relocated, `blocked` takes over the demand work. Verify on a branch with
-        // `displaced` removed that `blocked` can actually host the demand without a residual collision —
-        // e.g. a cross-midnight neighbour on an adjacent day that the single-day `displaced` scan never
-        // sees. Without this gate the swap would double-book `blocked` (a physically impossible plan that
-        // CountViolations does not catch, mirroring the time-overlap gate the direct path already applies).
-        var blockedProbe = grid.Branch();
-        blockedProbe.RemoveWork(blocked.Id, demand.Date, displaced);
-        if (!LegalityEvaluator.TargetIsPlaceable(blockedProbe, blocked.Id, demand.Date, demandWork))
-        {
-            return null;
-        }
-
-        // blocked gives up `displaced` (already in its period baseline) and takes the demand work: gate the
-        // net period-hours change against its MaximumHours cap. The snapshot marks works that move as a whole: those
-        // take their extras along, any other stays with a replacement and leaves them with blocked. A move that still
-        // falls back when it is written is reported by the cover as a warning.
-        if (ExceedsMaximumHours(blocked, AddedOf(addedPeriodHours, blocked.Id) - displaced.HoursGivenUp, demandWork.PaidHours))
-        {
-            return null;
-        }
-
-        RepairOption? best = null;
-        foreach (var recipient in snapshot.Agents)
-        {
-            if (recipient.Id == absentId || recipient.Id == blocked.Id || !recipient.IsInGroup
-                || !LegalityEvaluator.TargetIsPlaceable(grid, recipient.Id, demand.Date, displaced)
-                || LegalityEvaluator.IsGatedByContract(snapshot, recipient, displaced, demand.Date)
-                || ExceedsMaximumHours(recipient, AddedOf(addedPeriodHours, recipient.Id), displaced.PaidHours))
-            {
-                continue;
-            }
-
-            var branch = grid.Branch();
-            branch.RemoveWork(blocked.Id, demand.Date, displaced);
-            branch.AddWork(recipient.Id, demand.Date, displaced);
-            branch.AddWork(blocked.Id, demand.Date, demandWork);
-
-            var violations = LegalityEvaluator.CountViolations(branch, recipient, demand.Date, displaced)
-                + LegalityEvaluator.CountViolations(branch, blocked, demand.Date, demandWork);
-            if (violations > 0)
-            {
-                // Hard-reject: neither half of the swap may introduce a hard violation.
-                continue;
-            }
-
-            var relocation = new WorkMove(
-                displaced, displaced, blocked.Id, recipient.Id, demand.Date, EscalationTier.InGroupSwap);
-            var cover = new WorkMove(
-                demandWork, null, absentId, blocked.Id, demand.Date, EscalationTier.InGroupSwap);
-            WorkMove[] moves = [relocation, cover];
-
-            var key = new OptionKey(
-                Coverage: 0,
-                Violations: violations,
-                Perturbation: Perturbation(moves, ruleset),
-                Harmony: RowHarmony.Delta(grid, branch, blocked.Id, demand.Date)
-                    + RowHarmony.Delta(grid, branch, recipient.Id, demand.Date),
-                PreferenceRank: IsPreferred(blocked, demand.ShiftId) ? 0 : 1,
-                TargetHoursDeficit: blocked.TargetHoursDeficit,
-                PrimaryGuid: blocked.Id,
-                SecondaryGuid: recipient.Id);
-
-            var option = new RepairOption(key, true, moves, violations, string.Empty);
-            best = Better(best, option);
-        }
-
-        return best;
-    }
-
-    /// <summary>
-    /// Returns the single working, non-locked work of the blocked agent whose interval overlaps the demand,
-    /// or null when there is none (agent is free, handled as a direct cover) or more than one (would need a
-    /// deeper chain than the depth-2 bound).
-    /// </summary>
-    private static RecoveryWork? SingleOverlappingMovableWork(WorkingGrid grid, Guid blockedId, DemandSlot demand)
-    {
-        RecoveryWork? overlapping = null;
-        foreach (var work in grid.Get(blockedId, demand.Date))
-        {
-            if (!work.OccupiedOverlaps(demand.Work))
-            {
-                continue;
-            }
-            if (!work.IsWorking || work.IsLocked || work.IsSwapLocked || overlapping is not null)
-            {
-                return null;
-            }
-            overlapping = work;
-        }
-        return overlapping;
-    }
-
     private static RepairOption BuildUncoveredOption(DemandSlot demand, bool anyCover)
     {
         var key = new OptionKey(
@@ -424,20 +321,20 @@ public sealed class LocalRepairEngine : IRecoveryEngine
         return new RepairOption(key, false, [], 0, reason);
     }
 
-    private static RepairOption Better(RepairOption? current, RepairOption candidate)
+    internal static RepairOption Better(RepairOption? current, RepairOption candidate)
         => current is null || candidate.Key.CompareTo(current.Key) < 0 ? candidate : current;
 
-    private static int Perturbation(IReadOnlyList<WorkMove> moves, Ruleset ruleset)
+    internal static int Perturbation(IReadOnlyList<WorkMove> moves, Ruleset ruleset)
         => moves.Sum(m => ruleset.WeightOf(m.Tier));
 
-    private static decimal AddedOf(IReadOnlyDictionary<Guid, decimal> added, Guid agentId)
+    internal static decimal AddedOf(IReadOnlyDictionary<Guid, decimal> added, Guid agentId)
         => added.TryGetValue(agentId, out var hours) ? hours : 0m;
 
     /// <summary>
     /// True when committing <paramref name="extraHours"/> to the agent would push its planned period hours
     /// (baseline + what this repair already added) past the contract MaximumHours cap. 0 = unconstrained.
     /// </summary>
-    private static bool ExceedsMaximumHours(RecoveryAgent agent, decimal addedSoFar, decimal extraHours)
+    internal static bool ExceedsMaximumHours(RecoveryAgent agent, decimal addedSoFar, decimal extraHours)
         => agent.MaximumHours > 0
             && agent.CurrentPeriodHours + addedSoFar + extraHours > agent.MaximumHours;
 
@@ -514,7 +411,7 @@ public sealed class LocalRepairEngine : IRecoveryEngine
         return EscalationTierSeverity.Highest(deltas.Select(d => d.Tier), uncovered.Count > 0);
     }
 
-    private static bool IsPreferred(RecoveryAgent agent, Guid? shiftId)
+    internal static bool IsPreferred(RecoveryAgent agent, Guid? shiftId)
         => shiftId is Guid id && agent.PreferredShiftIds.Contains(id);
 
     private static IReadOnlyList<Guid> WorkIdsOf(RecoveryWork work)

@@ -11,8 +11,9 @@ namespace Klacks.ScheduleRecovery.Model;
 /// relocation hops), and any in-group move is cheaper than a cross-group free or swap move.
 /// </summary>
 /// <param name="MaxSwapChainDepth">
-/// Enables swap chains when &gt;= 2 (O2 default 2). v1 performs exactly one depth-2 chain (one relocation +
-/// one cover); a value &gt; 2 does NOT deepen the search yet — deeper chains are a v2 extension.
+/// Longest swap chain in moves, the cover move included (default 3); below 2 no chain is built. Chains of two
+/// moves are always searched. A longer chain is only searched for a demand that no direct cover and no shorter
+/// chain covers, so fewer moves always win.
 /// </param>
 /// <param name="WeightInGroupFree">Perturbation weight of a direct in-group reassignment hop</param>
 /// <param name="WeightInGroupSwap">Perturbation weight of an in-group swap relocation hop</param>
@@ -28,6 +29,15 @@ namespace Klacks.ScheduleRecovery.Model;
 /// rhythm, shift wish - the same order as one option), so the result is never worse than the greedy repair.
 /// </param>
 /// <param name="LookaheadBranching">Options per demand and partial repair the lookahead tries (only with a beam &gt; 1).</param>
+/// <param name="ReliefReachDays">
+/// Days before and after the demand day in which an agent of a chain may give up one of its own works (default 7). Kept
+/// well inside the context window of the snapshot, so the rest-time, consecutive-days and weekly checks around a
+/// relief still see the neighbouring days.
+/// </param>
+/// <param name="DeepChainProbeBudget">
+/// Trials (one agent or one relief each) a chain search of more than two moves may spend per demand, shared evenly
+/// among the in-group agents that could cover it. A count, not a time limit, so the result does not depend on the machine.
+/// </param>
 public sealed record Ruleset(
     int MaxSwapChainDepth = RulesetDefaults.MaxSwapChainDepth,
     int WeightInGroupFree = RulesetDefaults.WeightInGroupFree,
@@ -37,7 +47,9 @@ public sealed record Ruleset(
     int WeightInGroupOnCall = RulesetDefaults.WeightInGroupOnCall,
     int WeightCrossGroupOnCall = RulesetDefaults.WeightCrossGroupOnCall,
     int LookaheadBeamWidth = RulesetDefaults.LookaheadBeamWidth,
-    int LookaheadBranching = RulesetDefaults.LookaheadBranching)
+    int LookaheadBranching = RulesetDefaults.LookaheadBranching,
+    int ReliefReachDays = RulesetDefaults.ReliefReachDays,
+    int DeepChainProbeBudget = RulesetDefaults.DeepChainProbeBudget)
 {
     public static readonly Ruleset Default = new();
 

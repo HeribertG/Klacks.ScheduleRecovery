@@ -31,6 +31,7 @@ public sealed class RecoverySnapshot
     /// <param name="nonCriticalSlots">(agent, date) keys whose coverage is optional; missing means critical</param>
     /// <param name="receivingGroupId">The group being repaired; a cross-group cover joins a borrowed agent to it</param>
     /// <param name="blockingAbsences">Real time spans of the blocking absences per (agent, date); a missing key means none</param>
+    /// <param name="firstMovableDay">First day on which a swap chain may take a work from its holder; null means the first day of the absence</param>
     public RecoverySnapshot(
         IReadOnlyList<DateOnly> days,
         IReadOnlyList<RecoveryAgent> agents,
@@ -39,7 +40,8 @@ public sealed class RecoverySnapshot
         IReadOnlySet<IneligibleKey>? ineligibleAssignments = null,
         IReadOnlySet<CellKey>? nonCriticalSlots = null,
         Guid receivingGroupId = default,
-        IReadOnlyDictionary<CellKey, IReadOnlyList<AbsenceWindow>>? blockingAbsences = null)
+        IReadOnlyDictionary<CellKey, IReadOnlyList<AbsenceWindow>>? blockingAbsences = null,
+        DateOnly? firstMovableDay = null)
     {
         Days = days.OrderBy(d => d.DayNumber).ToList();
         Agents = agents.OrderBy(a => a.Id).ToList();
@@ -50,7 +52,55 @@ public sealed class RecoverySnapshot
         _nonCriticalSlots = nonCriticalSlots ?? new HashSet<CellKey>();
         ReceivingGroupId = receivingGroupId;
         _blockingAbsences = blockingAbsences ?? new Dictionary<CellKey, IReadOnlyList<AbsenceWindow>>();
+        FirstMovableDay = firstMovableDay;
     }
+
+    /// <summary>
+    /// First day on which a swap chain may take a work from its holder to relieve it; null means the first day of
+    /// the absence. Works on earlier days stay with their holder and only count as context.
+    /// </summary>
+    public DateOnly? FirstMovableDay { get; }
+
+    private RecoverySnapshot(
+        RecoverySnapshot source, IReadOnlyList<RecoveryAgent> agents, IReadOnlySet<IneligibleKey> ineligible, DateOnly? firstMovableDay)
+    {
+        Days = source.Days;
+        Agents = agents;
+        _agentsById = source._agentsById;
+        _works = source._works;
+        _availability = source._availability;
+        _ineligible = ineligible;
+        _nonCriticalSlots = source._nonCriticalSlots;
+        ReceivingGroupId = source.ReceivingGroupId;
+        _blockingAbsences = source._blockingAbsences;
+        FirstMovableDay = firstMovableDay;
+    }
+
+    /// <summary>
+    /// The same snapshot with a narrower candidate pool: the given agents are no candidates any more (their works stay
+    /// as occupancy and their names stay resolvable) and the given assignments are gated like a missing qualification.
+    /// Lets a caller repair again after its own checks refused a proposed option.
+    /// </summary>
+    /// <param name="agentIds">Agents to take out of the candidate pool</param>
+    /// <param name="assignments">(agent, shift, date) combinations to gate in addition</param>
+    public RecoverySnapshot Excluding(IReadOnlyCollection<Guid> agentIds, IReadOnlyCollection<IneligibleKey> assignments)
+    {
+        if (agentIds.Count == 0 && assignments.Count == 0)
+        {
+            return this;
+        }
+
+        var removed = agentIds.ToHashSet();
+        var agents = removed.Count == 0 ? Agents : Agents.Where(a => !removed.Contains(a.Id)).ToList();
+        var ineligible = new HashSet<IneligibleKey>(_ineligible);
+        ineligible.UnionWith(assignments);
+        return new RecoverySnapshot(this, agents, ineligible, FirstMovableDay);
+    }
+
+    /// <summary>The same snapshot with <see cref="FirstMovableDay"/> set.</summary>
+    /// <param name="firstMovableDay">First day on which a swap chain may take a work from its holder</param>
+    public RecoverySnapshot WithFirstMovableDay(DateOnly firstMovableDay)
+        => new(this, Agents, _ineligible, firstMovableDay);
 
     /// <summary>The group being repaired; a cross-group cover materialises a temporary membership in it.</summary>
     public Guid ReceivingGroupId { get; }

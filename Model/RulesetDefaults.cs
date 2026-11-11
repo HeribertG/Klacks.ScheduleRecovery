@@ -8,7 +8,7 @@ namespace Klacks.ScheduleRecovery.Model;
 /// </summary>
 public static class RulesetDefaults
 {
-    public const int MaxSwapChainDepth = 2;
+    public const int MaxSwapChainDepth = 3;
     public const int WeightInGroupOnCall = 1;
     public const int WeightInGroupFree = 2;
     public const int WeightCrossGroupOnCall = 3;
@@ -17,4 +17,6 @@ public static class RulesetDefaults
     public const int WeightCrossGroupSwap = 64;
     public const int LookaheadBeamWidth = 8;
     public const int LookaheadBranching = 4;
+    public const int ReliefReachDays = 7;
+    public const int DeepChainProbeBudget = 30000;
 }
