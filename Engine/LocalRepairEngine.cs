@@ -339,24 +339,30 @@ public sealed class LocalRepairEngine : IRecoveryEngine
             && agent.CurrentPeriodHours + addedSoFar + extraHours > agent.MaximumHours;
 
     /// <summary>
-    /// Collapses per-slot cross-group memberships into one per (agent, group) spanning the full borrowing
-    /// window (earliest ValidFrom .. latest ValidUntil), ordered by agent id for determinism.
+    /// Joins the per-slot cross-group memberships of an (agent, group) pair that overlap or lie on directly consecutive
+    /// days into one window; days with a gap between them stay separate memberships. Ordered by agent id, group id and
+    /// first day for determinism.
     /// </summary>
     private static IReadOnlyList<MembershipDelta> MergeMemberships(IReadOnlyList<MembershipDelta> memberships)
     {
-        if (memberships.Count == 0)
+        var merged = new List<MembershipDelta>();
+        foreach (var membership in memberships.OrderBy(m => m.AgentId).ThenBy(m => m.GroupId).ThenBy(m => m.ValidFrom))
         {
-            return [];
+            var last = merged.Count > 0 ? merged[^1] : null;
+            if (last is null
+                || last.AgentId != membership.AgentId
+                || last.GroupId != membership.GroupId
+                || membership.ValidFrom > last.ValidUntil.AddDays(1))
+            {
+                merged.Add(membership);
+            }
+            else if (membership.ValidUntil > last.ValidUntil)
+            {
+                merged[^1] = last with { ValidUntil = membership.ValidUntil };
+            }
         }
-        return memberships
-            .GroupBy(m => (m.AgentId, m.GroupId))
-            .Select(g => new MembershipDelta(
-                g.Key.AgentId,
-                g.Key.GroupId,
-                g.Min(m => m.ValidFrom),
-                g.Max(m => m.ValidUntil)))
-            .OrderBy(m => m.AgentId)
-            .ToList();
+
+        return merged;
     }
 
     private static void Commit(WorkingGrid grid, RepairOption option)
